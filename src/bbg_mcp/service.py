@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import ops
+from . import changes, ops
 from .backends.base import Backend, BloombergError
 from .config import Config
 from .guards import GuardError, HitBudget, TTLCache, normalize_fields, normalize_list, resolve_window
@@ -107,6 +107,88 @@ class BloombergService:
             for row in shown:
                 out.append(",".join([_fmt(row.get("date"))] + [_fmt(row.get(f)) for f in flds]))
         return "\n".join(out)
+
+    # --- period changes -------------------------------------------------
+
+    def price_changes(
+        self,
+        securities: list[str] | str,
+        periods: list[str] | str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        field: str = "PX_LAST",
+        currency: str | None = None,
+    ) -> str:
+        secs = normalize_list(securities, "security", self.cfg.max_securities)
+        fld = normalize_fields(field, 1)[0]
+        # Fetch a little before the earliest anchor so a close "as of" that date exists
+        # even when it falls on a weekend or holiday.
+        pad = timedelta(days=10)
+
+        if start_date:
+            if periods:
+                raise GuardError("Pass either periods or start_date/end_date, not both.")
+            start, end = resolve_window(start_date, end_date, self.cfg.max_history_days, default_days=365)
+            fetch_start = start - pad
+            plist: list[str] = []
+        else:
+            plist = [p.upper() for p in normalize_list(periods or list(changes.DEFAULT_PERIODS), "period", 8)]
+            if bad := [p for p in plist if p not in changes.PERIODS]:
+                raise GuardError(f"Unknown period(s) {bad}; use any of {changes.PERIODS}.")
+            _, end = resolve_window(None, end_date, self.cfg.max_history_days, default_days=0)
+            anchors = [changes.anchor_date(p, end) or end - timedelta(days=1) for p in plist]
+            fetch_start = min(anchors) - pad
+        resolve_window(fetch_start, end, self.cfg.max_history_days + pad.days + 2, default_days=0)
+
+        req = ops.build_historical(secs, [fld], fetch_start, end, "DAILY", currency=currency)
+        results = self._cached(
+            TTLCache.key(*req),
+            self.cfg.cache_ttl_history,
+            len(secs),
+            lambda: ops.parse_historical(self.backend.request(*req)),
+        )
+
+        ccy = f" in {currency.upper()}" if currency else ""
+        notes: list[str] = []
+        if not plist:
+            out = [
+                f"{fld}{ccy} change from {start} to {end} (closing level on or before each date).",
+                "security,start_date,start,end_date,end,change,pct_change,high,low",
+            ]
+            for entry in results:
+                obs = changes.observations(entry["rows"], fld)
+                a = changes.value_on_or_before(obs, start)
+                b = changes.value_on_or_before(obs, end)
+                window = [v for d, v in obs if a and a[0] <= d <= end]
+                if a is None or b is None or a[0] >= b[0]:
+                    out.append(f"{_fmt(entry['security'])},,,,,,,,")
+                    notes.append(f"{entry['security']}: not enough data in range")
+                else:
+                    abs_chg, pct = changes.change(a[1], b[1])
+                    out.append(",".join(_fmt(x) for x in (
+                        entry["security"], a[0].isoformat(), a[1], b[0].isoformat(), b[1],
+                        abs_chg, None if pct is None else round(pct, 3), max(window), min(window),
+                    )))
+                notes.extend(f"{entry['security']}: {i.strip()}" for i in _issues(entry))
+        else:
+            out = [
+                f"{fld}{ccy} change to latest close; pct = % change, chg = absolute change "
+                "(use chg for yields/rates, where it is in yield points).",
+                ",".join(["security", "date", "last"] + [f"{p}_{k}" for p in plist for k in ("pct", "chg")]),
+            ]
+            for entry in results:
+                pc = changes.period_changes(changes.observations(entry["rows"], fld), plist)
+                if not pc:
+                    out.append(_fmt(entry["security"]) + "," * (2 + 2 * len(plist)))
+                    notes.append(f"{entry['security']}: no data")
+                else:
+                    cells = [entry["security"], pc["end_date"].isoformat(), pc["end"]]
+                    for p in plist:
+                        r = pc["periods"][p]
+                        cells += [None, None] if r is None else [None if r[3] is None else round(r[3], 3), r[2]]
+                    out.append(",".join(_fmt(c) for c in cells))
+                notes.extend(f"{entry['security']}: {i.strip()}" for i in _issues(entry))
+        return "\n".join(out + ([""] + notes if notes else []))
 
     # --- reference ------------------------------------------------------
 

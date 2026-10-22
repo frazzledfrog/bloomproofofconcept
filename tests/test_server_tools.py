@@ -23,6 +23,7 @@ def test_tools_registered(server):
         "bbg_status",
         "get_historical_data",
         "get_reference_data",
+        "get_price_changes",
         "get_intraday_bars",
         "search_securities",
         "search_fields",
@@ -97,3 +98,30 @@ def test_unknown_topic(server):
 
 def test_status(server):
     assert "connected: True" in call(server, "bbg_status")
+
+
+def test_price_changes_default_periods(server, svc):
+    text = call(server, "get_price_changes", securities=["USDCAD Curncy", "SPX Index"])
+    lines = text.splitlines()
+    assert lines[1] == "security,date,last," + ",".join(
+        f"{p}_{k}" for p in ("1D", "1W", "1M", "3M", "YTD", "1Y") for k in ("pct", "chg")
+    )
+    row = lines[2].split(",")
+    assert row[0] == "USDCAD Curncy" and len(row) == 15 and all(row[3:])
+    assert svc.budget.used_today() == 2  # one field x two securities, one request
+
+
+def test_price_changes_custom_range(server):
+    text = call(
+        server, "get_price_changes", securities=["EURUSD Curncy"], start_date="2026-01-03", end_date="2026-06-30"
+    )
+    header, row = text.splitlines()[1:3]
+    assert header == "security,start_date,start,end_date,end,change,pct_change,high,low"
+    cells = row.split(",")
+    assert cells[1] == "2026-01-02"  # Saturday start -> prior close
+    assert float(cells[7]) >= max(float(cells[2]), float(cells[4]))
+
+
+def test_price_changes_rejects_bad_period(server):
+    with pytest.raises(ToolError, match="Unknown period"):
+        asyncio.run(server.call_tool("get_price_changes", {"securities": ["SPX Index"], "periods": ["5Y"]}))

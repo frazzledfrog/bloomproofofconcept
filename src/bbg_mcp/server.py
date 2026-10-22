@@ -67,6 +67,27 @@ def build_server(svc: BloombergService) -> MCPServer:
         )
 
     @mcp.tool(annotations=READ_ONLY)
+    def get_price_changes(
+        securities: Securities,
+        periods: Annotated[
+            list[str] | None,
+            Field(description="Any of 1D, 1W, 2W, 1M, 3M, 6M, YTD, 1Y; default 1D,1W,1M,3M,YTD,1Y"),
+        ] = None,
+        start_date: Annotated[
+            str | None, Field(description="YYYY-MM-DD; use with end_date for one custom range instead of periods")
+        ] = None,
+        end_date: Annotated[str | None, Field(description="YYYY-MM-DD; default today")] = None,
+        field: Annotated[str, Field(description="Field to measure; default PX_LAST")] = "PX_LAST",
+        currency: Annotated[str | None, Field(description="Convert to this ISO currency first, e.g. CAD")] = None,
+    ) -> str:
+        """Change in FX rates, index levels, yields or prices over standard periods or a custom range.
+
+        Returns % change and absolute change per security. For yields (e.g. USGG10YR Index) read the
+        absolute change, which is in yield points. FX tickers look like 'USDCAD Curncy', 'EURUSD Curncy'.
+        """
+        return _guarded(lambda: svc.price_changes(securities, periods, start_date, end_date, field, currency))
+
+    @mcp.tool(annotations=READ_ONLY)
     def get_reference_data(securities: Securities, fields: Fields) -> str:
         """Current snapshot values (last price, name, market cap, ratios...). Returns CSV."""
         return _guarded(lambda: svc.reference(securities, fields))
@@ -126,6 +147,19 @@ def build_server(svc: BloombergService) -> MCPServer:
             f"for the securities in this topic, call get_news_signals for '{topic}', then get_historical_data "
             "(PX_LAST, WEEKLY, last year) for the top few names by news heat. Summarise the year's moves and "
             "flag where news activity is unusually high. Keep tool calls to a minimum."
+        )
+
+    @mcp.prompt()
+    def market_moves(
+        fx: str = "USDCAD Curncy, EURUSD Curncy, USDJPY Curncy, GBPUSD Curncy",
+        indices: str = "SPX Index, SPTSX Index, SX5E Index, NKY Index, USGG10YR Index",
+    ) -> str:
+        """Table of FX and index moves over standard periods."""
+        return (
+            f"Call get_price_changes once for these FX pairs: {fx}; and once for these indices/rates: {indices}. "
+            "Present two tables (FX, then indices/rates) with 1D, 1W, 1M, 3M, YTD and 1Y % changes; "
+            "for yield tickers show the absolute change in basis points (chg x 100) instead of %. "
+            "Then give 2-3 sentences on the largest moves. Do not call any other tools."
         )
 
     return mcp
