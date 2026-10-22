@@ -14,10 +14,13 @@ An MCP server that gives a local AI client access to Bloomberg data through the 
 git clone <this repo>; cd bloomproofofconcept
 python -m venv .venv; .venv\Scripts\activate
 pip install -e .
-pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple/ "blpapi>=3.24"
+pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple/ "blpapi>=3.26"
+copy config.example.toml config.toml   # optional; edit to taste
 ```
 
-`blpapi` is not on PyPI, so it has to come from Bloomberg's own package index as shown above.
+`blpapi` is not on PyPI, so it has to come from Bloomberg's own package index as shown above. Version 3.26 and later ship one Windows wheel for any Python 3.10+, so no compiler is needed.
+
+Keep the project (or at least `.venv`) outside OneDrive if you can. OneDrive sync can lock or partially upload venv files, which causes confusing import errors.
 
 ## Check the connection before connecting an AI
 
@@ -35,7 +38,7 @@ The server speaks MCP over stdio. For Claude Desktop, add this to `claude_deskto
   "mcpServers": {
     "bloomberg": {
       "command": "C:\\path\\to\\bloomproofofconcept\\.venv\\Scripts\\bbg-mcp.exe",
-      "env": { "BBG_MCP_CONFIG": "C:\\path\\to\\bloomproofofconcept\\config.yaml" }
+      "env": { "BBG_MCP_CONFIG": "C:\\path\\to\\bloomproofofconcept\\config.toml" }
     }
   }
 }
@@ -64,7 +67,7 @@ There is also the resource `bbg://news-topics`, which lists the topic baskets, a
 
 A standard Terminal DAPI login does not reliably expose headlines or story text. Those usually need a B-PIPE or Data License news entitlement. This server therefore provides **news activity signals** (Bloomberg's news heat and sentiment fields) by topic and by security, which reliably tells the model *where* the news is. To read the stories themselves, use `TOP <GO>` or `<ticker> CN <GO>` in the Terminal. Run `scripts/probe_news.py` to see what your login actually exposes. If it finds a headline mechanism, that can be added as a new backend operation.
 
-Edit the topics, and which instruments represent each topic, under `news_topics` in `config.yaml`.
+Edit the topics, and which instruments represent each topic, under `[news_topics]` in `config.toml`.
 
 ## Data limits and guardrails
 

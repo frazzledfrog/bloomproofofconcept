@@ -7,7 +7,6 @@ requires-python = ">=3.11"
 dependencies = [
     "mcp>=2.3,<3",
     "pydantic>=2",
-    "pyyaml>=6",
 ]
 # blpapi is not on PyPI; install it separately from Bloomberg's index (see README).
 

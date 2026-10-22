@@ -1,12 +1,11 @@
-"""Configuration: defaults, optional YAML file, environment overrides."""
+"""Configuration: defaults, optional TOML file, environment overrides."""
 
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-import yaml
 
 DEFAULT_STATE_DIR = Path.home() / ".bbg_mcp"
 
@@ -58,11 +57,11 @@ class Config:
 
 
 def load_config(path: str | os.PathLike | None = None) -> Config:
-    """Build a Config from defaults, then the YAML file, then env vars."""
+    """Build a Config from defaults, then the TOML file, then env vars."""
     cfg = Config()
     path = path or os.environ.get("BBG_MCP_CONFIG")
     if path:
-        data = yaml.safe_load(Path(path).read_text()) or {}
+        data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
         for key, value in data.items():
             if not hasattr(cfg, key):
                 raise ValueError(f"Unknown config key: {key}")
