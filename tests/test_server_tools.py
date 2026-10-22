@@ -115,13 +115,48 @@ def test_price_changes_custom_range(server):
     text = call(
         server, "get_price_changes", securities=["EURUSD Curncy"], start_date="2026-01-03", end_date="2026-06-30"
     )
-    header, row = text.splitlines()[1:3]
-    assert header == "security,start_date,start,end_date,end,change,pct_change,high,low"
+    header, row = text.splitlines()[2:4]
+    assert header == "security,start_date,start,end_date,end,ratio_end_over_start,chg,pct_change,high,low"
     cells = row.split(",")
     assert cells[1] == "2026-01-02"  # Saturday start -> prior close
-    assert float(cells[7]) >= max(float(cells[2]), float(cells[4]))
+    start, end, ratio, pct = float(cells[2]), float(cells[4]), float(cells[5]), float(cells[7])
+    assert ratio == pytest.approx(end / start, rel=1e-5)
+    assert pct == pytest.approx((end / start - 1) * 100, abs=1e-3)
+    assert float(cells[8]) >= max(start, end)
 
 
 def test_price_changes_rejects_bad_period(server):
     with pytest.raises(ToolError, match="Unknown period"):
         asyncio.run(server.call_tool("get_price_changes", {"securities": ["SPX Index"], "periods": ["5Y"]}))
+
+
+def _row(text, label):
+    return next(l for l in text.splitlines() if l.startswith(label + ",")).split(",")
+
+
+def test_price_changes_invert(server):
+    args = dict(securities=["USDCAD Curncy"], start_date="2026-03-02", end_date="2026-06-30")
+    raw = _row(call(server, "get_price_changes", **args), "USDCAD Curncy")
+    inv = _row(call(server, "get_price_changes", invert=True, **args), "1/(USDCAD Curncy)")
+    assert float(inv[2]) == pytest.approx(1 / float(raw[2]), rel=1e-5)
+    assert float(inv[7]) == pytest.approx((float(raw[2]) / float(raw[4]) - 1) * 100, abs=1e-3)
+
+
+def test_price_changes_ratio_and_bps(server, svc):
+    text = call(server, "get_price_changes", securities=["AAPL US Equity"], ratio_to="SPX Index", periods=["1M"])
+    assert "divided by SPX Index" in text
+    assert _row(text, "AAPL US Equity / SPX Index")
+    assert svc.budget.used_today() == 2  # security + benchmark
+    bps = call(server, "get_price_changes", securities=["USGG10YR Index"], periods=["1M"], change_in_bps=True)
+    plain = call(server, "get_price_changes", securities=["USGG10YR Index"], periods=["1M"])
+    assert float(_row(bps, "USGG10YR Index")[4]) == pytest.approx(float(_row(plain, "USGG10YR Index")[4]) * 100)
+
+
+def test_historical_has_server_computed_change_and_dividend_default(server, backend):
+    text = call(server, "get_historical_data", securities=["SPX Index"], fields=["PX_LAST"],
+                start_date="2025-12-31", end_date="2026-06-30", periodicity="MONTHLY")
+    assert "split-adjusted, dividend-adjusted" in text
+    line = next(l for l in text.splitlines() if l.startswith("CHANGE PX_LAST"))
+    assert "pct" in line
+    params = backend.calls[-1][2]
+    assert params["adjustmentNormal"] is True and params["adjustmentFollowDPDF"] is False

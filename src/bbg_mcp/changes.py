@@ -78,3 +78,14 @@ def period_changes(obs: list[tuple[date, float]], periods: list[str]) -> dict[st
         else:
             out["periods"][p] = (base[0], base[1], *change(base[1], end_v))
     return out
+
+
+def invert(obs: list[tuple[date, float]]) -> list[tuple[date, float]]:
+    """1/x of each observation, e.g. USDCAD -> CADUSD. Zeros are dropped."""
+    return [(d, 1.0 / v) for d, v in obs if v]
+
+
+def ratio(obs: list[tuple[date, float]], base: list[tuple[date, float]]) -> list[tuple[date, float]]:
+    """obs / base on each date both have a value (cross rates, relative performance)."""
+    b = dict(base)
+    return [(d, v / b[d]) for d, v in obs if b.get(d)]

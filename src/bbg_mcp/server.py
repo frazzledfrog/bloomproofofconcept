@@ -21,8 +21,13 @@ Bloomberg data from the user's own logged-in Terminal (Desktop API).
 - Securities use Bloomberg syntax: '<ticker> [<exchange>] <Yellow Key>', e.g. 'AAPL US Equity',
   'SPX Index', 'CO1 Comdty', 'EURUSD Curncy', 'USGG10YR Index'. If unsure, call search_securities first.
 - Field mnemonics look like PX_LAST, PX_VOLUME, CUR_MKT_CAP. If unsure, call search_fields.
-- History is limited to roughly the last year. Every call uses the user's Bloomberg data allowance:
-  request only what you need and reuse earlier results instead of re-requesting.
+- One history request may span at most about one year (any year, e.g. 2008 is fine). Every call uses
+  the user's Bloomberg data allowance: request only what you need and reuse earlier results.
+- Never do arithmetic on prices yourself. For any change, return, % move, FX move, cross rate or
+  relative performance, call get_price_changes and quote its numbers. get_historical_data also ends
+  each security with server-computed CHANGE lines; quote those rather than dividing yourself.
+- Prices are split- and dividend-adjusted by default. Indices like 'SPX Index' are price indices
+  (dividends are not in them); for total return use the total-return ticker, e.g. 'SPXT Index'.
 - News tools return news heat/sentiment signals, not headlines.
 """
 
@@ -55,7 +60,9 @@ def build_server(svc: BloombergService) -> MCPServer:
         end_date: Annotated[str | None, Field(description="YYYY-MM-DD; default today")] = None,
         periodicity: Annotated[str, Field(description="DAILY, WEEKLY, MONTHLY or QUARTERLY")] = "DAILY",
         adjust_splits: bool = True,
-        adjust_dividends: Annotated[bool, Field(description="Adjust prices for dividends (total-return style)")] = False,
+        adjust_dividends: Annotated[
+            bool, Field(description="Adjust prices for dividends (default true; has no effect on price indices)")
+        ] = True,
         currency: Annotated[str | None, Field(description="Convert to this ISO currency, e.g. USD")] = None,
         max_rows: Annotated[int | None, Field(description="Cap rows per security (most recent kept)")] = None,
     ) -> str:
@@ -79,13 +86,33 @@ def build_server(svc: BloombergService) -> MCPServer:
         end_date: Annotated[str | None, Field(description="YYYY-MM-DD; default today")] = None,
         field: Annotated[str, Field(description="Field to measure; default PX_LAST")] = "PX_LAST",
         currency: Annotated[str | None, Field(description="Convert to this ISO currency first, e.g. CAD")] = None,
+        adjust_dividends: Annotated[bool, Field(description="Dividend-adjusted prices (default true)")] = True,
+        invert: Annotated[
+            bool, Field(description="Measure 1/x, e.g. USDCAD Curncy -> CAD in USD terms (how much CAD moved)")
+        ] = False,
+        ratio_to: Annotated[
+            str | None,
+            Field(description="Divide each security by this one on every date: relative performance "
+                  "(AAPL US Equity vs SPX Index) or cross rates"),
+        ] = None,
+        change_in_bps: Annotated[
+            bool, Field(description="Report absolute change in basis points; use for yields, e.g. USGG10YR Index")
+        ] = False,
     ) -> str:
-        """Change in FX rates, index levels, yields or prices over standard periods or a custom range.
+        """Change in prices, index levels, FX rates or yields over standard periods or a custom date range.
 
-        Returns % change and absolute change per security. For yields (e.g. USGG10YR Index) read the
-        absolute change, which is in yield points. FX tickers look like 'USDCAD Curncy', 'EURUSD Curncy'.
+        Use this for ANY question about a change, return or move; all arithmetic (division, % change,
+        inversion, ratios, bps) is done here so you can quote the numbers directly. For calendar year
+        2024 pass start_date 2024-01-01 and end_date 2024-12-31 (measured from the prior year-end close).
+        FX tickers look like 'USDCAD Curncy'. To express a currency's own move against USD when the
+        ticker quotes USD first (USDCAD, USDJPY), set invert=true.
         """
-        return _guarded(lambda: svc.price_changes(securities, periods, start_date, end_date, field, currency))
+        return _guarded(
+            lambda: svc.price_changes(
+                securities, periods, start_date, end_date, field, currency,
+                adjust_dividends, invert, ratio_to, change_in_bps,
+            )
+        )
 
     @mcp.tool(annotations=READ_ONLY)
     def get_reference_data(securities: Securities, fields: Fields) -> str:

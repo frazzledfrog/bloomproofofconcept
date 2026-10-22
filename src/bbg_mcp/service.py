@@ -34,6 +34,12 @@ def _issues(entry: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _adjustment_label(splits: bool, dividends: bool) -> str:
+    parts = [("split-adjusted" if splits else "not split-adjusted"),
+             ("dividend-adjusted" if dividends else "not dividend-adjusted")]
+    return ", ".join(parts)
+
+
 class BloombergService:
     def __init__(self, cfg: Config, backend: Backend, budget: HitBudget | None = None, cache: TTLCache | None = None):
         self.cfg = cfg
@@ -68,7 +74,7 @@ class BloombergService:
         end_date: str | None = None,
         periodicity: str = "DAILY",
         adjust_splits: bool = True,
-        adjust_dividends: bool = False,
+        adjust_dividends: bool = True,
         currency: str | None = None,
         max_rows: int | None = None,
     ) -> str:
@@ -89,7 +95,12 @@ class BloombergService:
             lambda: ops.parse_historical(self.backend.request(*req)),
         )
 
-        out = [f"Historical {periodicity} {start}..{end}; fields: {', '.join(flds)}"]
+        out = [
+            f"Historical {periodicity} {start}..{end}; fields: {', '.join(flds)}; "
+            f"{_adjustment_label(adjust_splits, adjust_dividends)}",
+            "Each security ends with CHANGE lines computed by the server (first row to last row); "
+            "quote them rather than recalculating.",
+        ]
         for entry in results:
             rows = entry["rows"]
             out.append("")
@@ -106,6 +117,15 @@ class BloombergService:
             out.append(",".join(["date", *flds]))
             for row in shown:
                 out.append(",".join([_fmt(row.get("date"))] + [_fmt(row.get(f)) for f in flds]))
+            for f in flds:
+                obs = changes.observations(rows, f)
+                if len(obs) >= 2:
+                    (d0, v0), (d1, v1) = obs[0], obs[-1]
+                    abs_chg, pct = changes.change(v0, v1)
+                    out.append(
+                        f"CHANGE {f}: {_fmt(v0)} on {d0} -> {_fmt(v1)} on {d1}; "
+                        f"abs {_fmt(abs_chg)}; pct {_fmt(None if pct is None else round(pct, 3))}%"
+                    )
         return "\n".join(out)
 
     # --- period changes -------------------------------------------------
@@ -118,9 +138,14 @@ class BloombergService:
         end_date: str | None = None,
         field: str = "PX_LAST",
         currency: str | None = None,
+        adjust_dividends: bool = True,
+        invert: bool = False,
+        ratio_to: str | None = None,
+        change_in_bps: bool = False,
     ) -> str:
         secs = normalize_list(securities, "security", self.cfg.max_securities)
         fld = normalize_fields(field, 1)[0]
+        bench = normalize_list(ratio_to, "ratio_to security", 1)[0] if ratio_to else None
         # Fetch a little before the earliest anchor so a close "as of" that date exists
         # even when it falls on a weekend or holiday.
         pad = timedelta(days=10)
@@ -140,54 +165,86 @@ class BloombergService:
             fetch_start = min(anchors) - pad
         resolve_window(fetch_start, end, self.cfg.max_history_days + pad.days + 2, default_days=0)
 
-        req = ops.build_historical(secs, [fld], fetch_start, end, "DAILY", currency=currency)
+        fetch = secs + ([bench] if bench and bench not in secs else [])
+        req = ops.build_historical(fetch, [fld], fetch_start, end, "DAILY", True, adjust_dividends, currency)
         results = self._cached(
             TTLCache.key(*req),
             self.cfg.cache_ttl_history,
-            len(secs),
+            len(fetch),
             lambda: ops.parse_historical(self.backend.request(*req)),
         )
 
-        ccy = f" in {currency.upper()}" if currency else ""
+        # Build the series to measure: raw, inverted (1/x) or divided by the benchmark, day by day.
+        by_sec = {e["security"]: e for e in results}
         notes: list[str] = []
+        bench_obs = None
+        if bench:
+            bench_obs = changes.observations(by_sec.get(bench, {"rows": []})["rows"], fld)
+            notes.extend(f"{bench}: {i.strip()}" for i in _issues(by_sec.get(bench, {})))
+        series: list[tuple[str, list]] = []
+        for sec in secs:
+            entry = by_sec.get(sec, {"rows": []})
+            notes.extend(f"{sec}: {i.strip()}" for i in _issues(entry))
+            obs = changes.observations(entry["rows"], fld)
+            label = sec
+            if invert:
+                obs, label = changes.invert(obs), f"1/({label})"
+            if bench_obs is not None:
+                obs, label = changes.ratio(obs, bench_obs), f"{label} / {bench}"
+            series.append((label, obs))
+
+        unit = "bps" if change_in_bps else "chg"
+        scale = 100.0 if change_in_bps else 1.0
+        desc = [f"{fld}"]
+        if currency:
+            desc.append(f"in {currency.upper()}")
+        if invert:
+            desc.append("inverted (1/x)")
+        if bench:
+            desc.append(f"divided by {bench} on each date")
+        header = (
+            f"{' '.join(desc)}; {_adjustment_label(True, adjust_dividends)}. All arithmetic is done by the server: "
+            f"pct = (end / start - 1) x 100; {unit} = (end - start)"
+            + (" x 100 (basis points, for yields quoted in %)" if change_in_bps else "")
+            + ". Quote these numbers rather than recalculating."
+        )
+
         if not plist:
             out = [
-                f"{fld}{ccy} change from {start} to {end} (closing level on or before each date).",
-                "security,start_date,start,end_date,end,change,pct_change,high,low",
+                header,
+                f"Range {start}..{end}, measured from the close on or before each date.",
+                f"security,start_date,start,end_date,end,ratio_end_over_start,{unit},pct_change,high,low",
             ]
-            for entry in results:
-                obs = changes.observations(entry["rows"], fld)
+            for label, obs in series:
                 a = changes.value_on_or_before(obs, start)
                 b = changes.value_on_or_before(obs, end)
-                window = [v for d, v in obs if a and a[0] <= d <= end]
                 if a is None or b is None or a[0] >= b[0]:
-                    out.append(f"{_fmt(entry['security'])},,,,,,,,")
-                    notes.append(f"{entry['security']}: not enough data in range")
-                else:
-                    abs_chg, pct = changes.change(a[1], b[1])
-                    out.append(",".join(_fmt(x) for x in (
-                        entry["security"], a[0].isoformat(), a[1], b[0].isoformat(), b[1],
-                        abs_chg, None if pct is None else round(pct, 3), max(window), min(window),
-                    )))
-                notes.extend(f"{entry['security']}: {i.strip()}" for i in _issues(entry))
+                    out.append(_fmt(label) + "," * 9)
+                    notes.append(f"{label}: not enough data in range")
+                    continue
+                window = [v for d, v in obs if a[0] <= d <= b[0]]
+                abs_chg, pct = changes.change(a[1], b[1])
+                out.append(",".join(_fmt(x) for x in (
+                    label, a[0].isoformat(), a[1], b[0].isoformat(), b[1],
+                    round(b[1] / a[1], 6) if a[1] else None, abs_chg * scale,
+                    None if pct is None else round(pct, 3), max(window), min(window),
+                )))
         else:
             out = [
-                f"{fld}{ccy} change to latest close; pct = % change, chg = absolute change "
-                "(use chg for yields/rates, where it is in yield points).",
-                ",".join(["security", "date", "last"] + [f"{p}_{k}" for p in plist for k in ("pct", "chg")]),
+                header,
+                ",".join(["security", "date", "last"] + [f"{p}_{k}" for p in plist for k in ("pct", unit)]),
             ]
-            for entry in results:
-                pc = changes.period_changes(changes.observations(entry["rows"], fld), plist)
+            for label, obs in series:
+                pc = changes.period_changes(obs, plist)
                 if not pc:
-                    out.append(_fmt(entry["security"]) + "," * (2 + 2 * len(plist)))
-                    notes.append(f"{entry['security']}: no data")
-                else:
-                    cells = [entry["security"], pc["end_date"].isoformat(), pc["end"]]
-                    for p in plist:
-                        r = pc["periods"][p]
-                        cells += [None, None] if r is None else [None if r[3] is None else round(r[3], 3), r[2]]
-                    out.append(",".join(_fmt(c) for c in cells))
-                notes.extend(f"{entry['security']}: {i.strip()}" for i in _issues(entry))
+                    out.append(_fmt(label) + "," * (2 + 2 * len(plist)))
+                    notes.append(f"{label}: no data")
+                    continue
+                cells = [label, pc["end_date"].isoformat(), pc["end"]]
+                for p in plist:
+                    r = pc["periods"][p]
+                    cells += [None, None] if r is None else [None if r[3] is None else round(r[3], 3), r[2] * scale]
+                out.append(",".join(_fmt(c) for c in cells))
         return "\n".join(out + ([""] + notes if notes else []))
 
     # --- reference ------------------------------------------------------

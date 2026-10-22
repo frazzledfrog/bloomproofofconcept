@@ -53,14 +53,16 @@ To develop without a Terminal, set `BBG_MCP_BACKEND=mock` to get deterministic s
 | Tool | Purpose |
 |---|---|
 | `bbg_status` | Connection state and today's approximate hit usage |
-| `get_historical_data` | EOD history for up to 366 days (DAILY/WEEKLY/MONTHLY/QUARTERLY), returned as CSV |
-| `get_price_changes` | % and absolute change for FX, indices, yields, prices over 1D/1W/2W/1M/3M/6M/YTD/1Y, or a custom date range (with high/low) |
+| `get_historical_data` | EOD history spanning up to 366 days, from any year (DAILY/WEEKLY/MONTHLY/QUARTERLY), returned as CSV with server-computed first-to-last CHANGE lines |
+| `get_price_changes` | % and absolute change for prices, indices, FX and yields over 1D/1W/2W/1M/3M/6M/YTD/1Y or a custom range. All arithmetic is server-side, with options for inverted FX (1/x), a ratio to a benchmark (relative performance, cross rates) and basis points for yields |
 | `get_reference_data` | Current snapshot fields |
 | `get_intraday_bars` | OHLCV bars (Bloomberg keeps about 140 days) |
 | `search_securities` | Turn a name like "brent crude" into an identifier like `CO1 Comdty` |
 | `search_fields` | Turn a description like "dividend yield" into a field mnemonic |
 | `get_news_signals` | Rank a topic's instruments by news heat and sentiment |
 | `get_security_news_signals` | News heat and sentiment for given securities |
+
+History is split- and dividend-adjusted by default, using exactly the adjustments requested rather than your Terminal's `DPDF <GO>` settings. Price indices such as `SPX Index` contain no dividends; ask for the total-return ticker (e.g. `SPXT Index`) for total return.
 
 There is also the resource `bbg://news-topics`, which lists the topic baskets, and the prompts `market_brief` and `market_moves` (FX and index move tables).
 

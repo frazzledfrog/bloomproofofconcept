@@ -71,7 +71,7 @@ def build_historical(
     end: date,
     periodicity: str = "DAILY",
     adjust_splits: bool = True,
-    adjust_dividends: bool = False,
+    adjust_dividends: bool = True,
     currency: str | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> tuple[str, str, dict[str, Any]]:
@@ -81,6 +81,8 @@ def build_historical(
         "startDate": start.strftime("%Y%m%d"),
         "endDate": end.strftime("%Y%m%d"),
         "periodicitySelection": periodicity,
+        # Use exactly the adjustments requested, not the Terminal user's DPDF <GO> defaults.
+        "adjustmentFollowDPDF": False,
         "adjustmentSplit": adjust_splits,
         "adjustmentAbnormal": adjust_dividends,
         "adjustmentNormal": adjust_dividends,
